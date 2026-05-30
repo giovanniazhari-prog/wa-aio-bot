@@ -372,7 +372,9 @@ app.listen(PORT, () => console.log(`🌐 HTTP server aktif di port ${PORT}`));
 // ── WA Connection ─────────────────────────────────────────────────────────────
 const msgRetryCounterCache = { _m:new Map(), get(k){return this._m.get(k);}, set(k,v){this._m.set(k,v);} };
 let _pairingDone    = false;
+let _lastPairingAt  = 0;
 let _logoutRetries  = 0;
+const PAIRING_COOLDOWN_MS = 5 * 60 * 1000; // 5 menit cooldown antar pairing request
 const _downloadingUrls = new Set();
 
 function resetPairingState() { _pairingDone = false; }
@@ -401,7 +403,15 @@ async function startBot() {
 
     sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
         if (qr && !sock.authState.creds.registered && !_pairingDone) {
-            _pairingDone = true;
+            const now = Date.now();
+            const elapsed = now - _lastPairingAt;
+            if (elapsed < PAIRING_COOLDOWN_MS) {
+                const sisaDetik = Math.ceil((PAIRING_COOLDOWN_MS - elapsed) / 1000);
+                console.log(`⏳ Cooldown pairing aktif, tunggu ${sisaDetik}s lagi sebelum request kode baru...`);
+                return;
+            }
+            _pairingDone   = true;
+            _lastPairingAt = now;
             const phone  = normalizePhone(OWNER_PHONE);
             if (!phone) { console.error("❌ OWNER_PHONE tidak valid!"); return; }
             try {
@@ -411,10 +421,12 @@ async function startBot() {
                 console.log("╚══════════════════════════════════════╝");
                 console.log(`Nomor: ${phone}`);
                 console.log("Buka WA → Perangkat Tertaut → Tautkan dengan Nomor HP\n");
+                console.log("⏰ Kode berlaku sekitar 60 detik. Bot tidak akan request ulang selama 5 menit.\n");
             } catch (e) { console.error("❌ Gagal request pairing code:", e.message); _pairingDone = false; }
         }
         if (connection === "open") {
             _logoutRetries = 0;
+            _lastPairingAt = 0;
             resetPairingState();
             console.log("✅ WA Bot aktif!\n");
         }
@@ -436,8 +448,11 @@ async function startBot() {
                 setTimeout(startBot, delay);
                 return;
             }
-            console.log("↩️ Reconnecting...");
-            setTimeout(startBot, 5000);
+            // Jika belum paired, reconnect lebih lambat biar tidak spam WA
+            const isPaired = sock.authState?.creds?.registered;
+            const reconnectDelay = isPaired ? 5000 : 30_000;
+            console.log(`↩️ Reconnecting dalam ${reconnectDelay/1000}s...`);
+            setTimeout(startBot, reconnectDelay);
         }
     });
 
